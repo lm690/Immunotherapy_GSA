@@ -1,0 +1,147 @@
+####PLINK Script for LB MRC project
+
+#Background: SNP array data (global screening assay - GSA) from 264 post mortem brain samples, pre-frontal cortex. After running on GSA arrays data was first run through genome studio to calculate call rates, to predict sex and general 
+#survey data. This script covers the PLINK QC pipeline after genome studio processing. 
+
+#Pre-processing (cutting, milling and extracting) completed by Lachlan
+#GSA arrays run by Lachlan
+#Data QC completed by Lachlan
+
+
+#change directory
+cd /mnt/data1/Lachlan/Infection_Immunisation/GSA_Imm/QC/GSA
+
+#Create bed file
+
+
+#There are 654027 SNPs
+
+
+#Investigate missingness per individual and per SNP and make histograms
+plink --bfile GSA --missing
+# output: plink.imiss and plink.lmiss, these files show respectively the proportion of missing SNPs per individual and the proportion of missing individuals per SNP.
+#Output: Total genotyping rate in remaining individuals is 0.991635
+
+
+# Delete SNPs and individuals with high levels of missingness, explanation of this and all following steps can be found in box 1 and table 1 of the article mentioned in the comments of this script.
+# The following two QC commands will not remove any SNPs or individuals. Thresholds here based on script developed by Eilis/Gemma
+# Delete SNPs with missingness >0.05.
+plink --bfile GSA --geno 0.05 --make-bed --out GSA_2
+
+#output
+#Total genotyping rate in remaining individuals is 0.991657
+#4637SNPs failed missingness test ( GENO > 0.05 )
+#0 SNPs failed frequency test ( MAF < 0 )
+#After frequency and genotyping pruning, there are 649688 SNPs
+
+# Delete individuals with missingness >0.02.
+plink --bfile GSA_2 --mind 0.02 --make-bed --out GSA_3
+
+#output
+#Total genotyping rate in remaining individuals is 0.999455
+#0 SNPs failed missingness test ( GENO > 1 )
+#0 SNPs failed frequency test ( MAF < 0 )
+#After frequency and genotyping pruning, there are 649390 SNPs
+
+
+## remove variants at the same position (i.e. triallelic)
+awk '{if ($1 != 0) print $1":"$4}' GSA_3.bim > pos.tmp
+sort pos.tmp | uniq -d > dupLocs.txt
+awk --delimiter=":" '{print $1,$2}' dupLocs.txt
+awk -F ":" '{print $1,$2-1,$2,"set1", "set2"}' dupLocs.txt > positionsExclude.txt
+
+plink --bfile GSA_3 --exclude positionsExclude.txt --make-bed --out GSA_4
+rm pos.tmp
+rm dupLocs.txt
+
+#output
+#Total genotyping rate in remaining individuals is 0.999455
+#0 SNPs failed missingness test ( GENO > 1 )
+#0 SNPs failed frequency test ( MAF < 0 )
+#After frequency and genotyping pruning, there are 649390 SNPs
+
+
+# Check for sex discrepancy.
+# Subjects who were a priori determined as females must have a F value of <0.2, and subjects who were a priori determined as males must have a F value >0.8. This F value is based on the X chromosome inbreeding (homozygosity) estimate.
+# Subjects who do not fulfil these requirements are flagged "PROBLEM" by PLINK.
+
+
+plink --bfile GSA_4 --check-sex
+
+#output: After filtering,  303 males, 310 females, and 0 of unspecified sex
+
+
+# 1) Delete individuals with sex discrepancy.
+grep "PROBLEM" plink.sexcheck| awk '{print$1,$2}'> sex_discrepancy.txt
+# This command generates a list of individuals with the status “PROBLEM”.
+plink --bfile GSA_4 --remove sex_discrepancy.txt --make-bed --out GSA_5
+# This command removes the list of individuals with the status “PROBLEM”.
+
+#Output: After filtering, 303 males, 310 females, and 0 of unspecified sex
+
+
+## check for runs of homozygosity
+awk '{if ($1 >= 1 && $1 <= 22) print $2}' GSA_5.bim > autosomalVariants.txt
+plink --bfile GSA_5 --extract autosomalVariants.txt --maf 0.01 --hwe 0.00001 --mind 0.02 --geno 0.05 --indep-pairwise 5000 1000 0.2 --out ld.auto
+
+#output: 
+#10 SNPs failed missingness test ( GENO > 0.05 )
+#138993 SNPs failed frequency test ( MAF < 0.01 )
+#After frequency and genotyping pruning, there are 477356 SNPs
+
+
+
+plink --bfile GSA_5 --extract ld.auto.prune.in --het --out roh
+#ouput: After frequency and genotyping pruning, there are 191063 SNPs
+
+## exclude anyone with |Fhet| > 0.2
+awk '{if ($6 > 0.2 || $6 < -0.2) print $1,$2}' roh.het > excessHet.txt
+plink --bfile GSA_5 --remove excessHet.txt --make-bed --out GSA_6
+#output: After frequency and genotyping pruning, there are 649693 SNPs
+
+rm autosomalVariants.txt
+
+
+
+## filter sample and variant missingness, HWE, rare variants and exclude variants with no position
+awk '{if ($1 == 0) print $2}' GSA_6.bim > noLocPos.tmp
+plink --bfile GSA_6 --exclude noLocPos.tmp --maf 0.001 --hwe 0.00001 --mind 0.02 --geno 0.05 --make-bed --out GSA_QCd
+
+#output:
+#Total genotyping rate in remaining individuals is 0.99956
+#12 SNPs failed missingness test ( GENO > 0.05 )
+#111336 SNPs failed frequency test ( MAF < 0.001 )
+#After frequency and genotyping pruning, there are 538001 SNPs
+
+
+## write list of samples that passed QC for CNV calling
+
+cut -f 1,2 --delimiter=" " GSA.fam > /mnt/data1/Lachlan/Infection_Immunisation/GSA_Imm/QC/GSA_Imm/ID_Map.txt
+cut -f 2 --delimiter=" " GSA_QCd.fam > /mnt/data1/Lachlan/Infection_Immunisation/GSA_Imm/QC/GSA_Imm/Samples.txt
+ 
+
+## calc PCS within sample only
+# LD prune
+plink --bfile GSA_QCd --indep 50 5 1.5 --out GSA_QCd.ld
+
+plink --bfile GSA_QCd --extract GSA_QCd.ld.prune.in --make-bed --out GSA2_QCd.ld.prune
+
+#output: After frequency and genotyping pruning, there are 208748 SNPs
+
+wget --no-check-certificate https://cnsgenomics.com/software/gcta/bin/gcta_1.93.2beta.zip
+unzip gcta_1.93.2beta.zip
+
+gcta_1.93.2beta/gcta64 --bfile GSA2_QCd.ld.prune --make-grm-bin --autosome --out GSA3_QCd
+
+#output:
+#Summary of the GRM:
+#Mean of diagonals = 1.00001
+#Variance of diagonals = 0.00129041
+#Mean of off-diagonals = -0.00209311
+#Variance of off-diagonals = 1.3945e-05
+#GRM of 479 individuals has been saved in the file [LBMRC_GSA2_QCd_GCTA.grm.bin] (in binary format).
+
+gcta_1.93.2beta/gcta64 --grm GSA3_QCd --pca --out GSA4_QCd.pca
+
+## extract SNP probes for comparision with DNAm data
+plink --bfile GSA_QCd --extract /mnt/data1/EPIC_reference/RSprobes.txt --recodeA --out GSA_Final
